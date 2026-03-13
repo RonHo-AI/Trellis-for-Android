@@ -14,7 +14,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from .config import get_default_package, get_packages
+from .config import get_android_config, get_default_package, get_model_routing, get_packages
 from .paths import (
     DIR_SCRIPTS,
     DIR_SPEC,
@@ -55,6 +55,65 @@ def _run_git_command(args: list[str], cwd: Path | None = None) -> tuple[int, str
         return result.returncode, result.stdout, result.stderr
     except Exception as e:
         return 1, "", str(e)
+
+
+def _get_android_context(repo_root: Path) -> list[str]:
+    """Get Android-specific context lines (device, build target, model routing).
+
+    Returns empty list if no Android config or in non-Android project.
+    Gracefully handles missing adb or unconfigured Android section.
+    """
+    android_cfg = get_android_config(repo_root)
+    if not android_cfg:
+        return []
+
+    lines: list[str] = []
+    lines.append("## ANDROID CONTEXT")
+
+    # Build target
+    aosp_root = android_cfg.get("aosp_root", "${AOSP_ROOT}")
+    device_target = android_cfg.get("device_target", "not configured")
+    build_command = android_cfg.get("build_command", "m SystemUI")
+    lines.append(f"AOSP root:     {aosp_root}")
+    lines.append(f"Device target: {device_target}")
+    lines.append(f"Build command: {build_command}")
+
+    # Device info (graceful failure)
+    try:
+        result = subprocess.run(
+            ["adb", "devices"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        if result.returncode == 0:
+            device_lines = [
+                ln for ln in result.stdout.splitlines()
+                if ln.strip() and "List of devices" not in ln
+            ]
+            if device_lines:
+                lines.append(f"ADB devices:   {len(device_lines)} connected")
+                for dl in device_lines[:3]:
+                    lines.append(f"  {dl.strip()}")
+            else:
+                lines.append("ADB devices:   none connected")
+        else:
+            lines.append("ADB devices:   (adb unavailable)")
+    except Exception:
+        lines.append("ADB devices:   (adb not found)")
+
+    # Model routing table
+    routing = get_model_routing(repo_root)
+    if routing:
+        lines.append("")
+        lines.append("Model routing:")
+        for phase, model in routing.items():
+            lines.append(f"  {phase:<20} {model}")
+
+    lines.append("")
+    return lines
 
 
 def _get_packages_info(repo_root: Path) -> list[dict]:
@@ -234,6 +293,10 @@ def get_context_text(repo_root: Path | None = None) -> str:
 
     lines.append(f"Name: {developer}")
     lines.append("")
+
+    # Android context (shown if configured)
+    android_lines = _get_android_context(repo_root)
+    lines.extend(android_lines)
 
     # Git status
     lines.append("## GIT STATUS")

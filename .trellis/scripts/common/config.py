@@ -117,3 +117,44 @@ def get_hooks(event: str, repo_root: Path | None = None) -> list[str]:
     if isinstance(commands, list):
         return [str(c) for c in commands]
     return []
+
+
+def get_model_routing(repo_root: Path | None = None) -> dict[str, str]:
+    """Get the multi-model routing table from config.
+
+    Returns:
+        Dict mapping phase names to model identifiers.
+        e.g. {"design_analysis": "opus", "verification": "sonnet"}
+        Empty dict if not configured.
+    """
+    config = _load_config(repo_root)
+    routing = config.get("model_routing")
+    if not isinstance(routing, dict):
+        return {}
+    return {k: str(v) for k, v in routing.items()}
+
+
+def get_android_config(repo_root: Path | None = None) -> dict:
+    """Get Android-specific configuration (aosp_root, device_target, build_command).
+
+    Returns:
+        Dict with Android config values, empty dict if not configured.
+    """
+    config = _load_config(repo_root)
+    android = config.get("android")
+    if not isinstance(android, dict):
+        return {}
+    return dict(android)
+
+
+def get_codex_config(repo_root: Path | None = None) -> dict:
+    """Get Codex integration configuration (wrapper path, role prompt, timeout).
+
+    Returns:
+        Dict with Codex config values, empty dict if not configured.
+    """
+    config = _load_config(repo_root)
+    codex = config.get("codex")
+    if not isinstance(codex, dict):
+        return {}
+    return dict(codex)

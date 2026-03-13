@@ -1,74 +1,70 @@
-# Trellis Configuration
-# Project-level settings for the Trellis workflow system
-#
-# All values have sensible defaults. Only override what you need.
+# Android Trellis Template Configuration
+# Settings for the AI-driven AOSP customization workflow.
 
 #-------------------------------------------------------------------------------
 # Session Recording
 #-------------------------------------------------------------------------------
 
-# Commit message used when auto-committing journal/index changes
-# after running add_session.py
 session_commit_message: "chore: record journal"
-
-# Maximum lines per journal file before rotating to a new one
 max_journal_lines: 2000
 
 #-------------------------------------------------------------------------------
-# Packages (Monorepo)
+# Android Packages (AOSP source tree)
 #-------------------------------------------------------------------------------
 
-# Declare packages in this project and their source code paths.
-# If omitted, Trellis assumes a single-repo layout (spec/backend/, spec/frontend/).
-#
+# Declares the main Android packages this project customizes.
+# Adjust paths to match your AOSP source tree layout.
 packages:
-  cli:
-    path: packages/cli
-  docs-site:
-    path: docs-site
-    type: submodule
-
-# Default package used when --package is not specified.
-default_package: cli
+  systemui:
+    path: packages/SystemUI
+  launcher:
+    path: packages/apps/Launcher3
+  framework:
+    path: frameworks/base
+  overlay:
+    path: vendor/custom/overlay
+default_package: systemui
 
 #-------------------------------------------------------------------------------
-# Task Lifecycle Hooks
+# Android Build Configuration
 #-------------------------------------------------------------------------------
 
-# Shell commands to run after task lifecycle events.
-# Each hook receives TASK_JSON_PATH environment variable pointing to task.json.
-# Hook failures print a warning but do not block the main operation.
-#
+android:
+  aosp_root: "${AOSP_ROOT}"
+  device_target: "${DEVICE_TARGET:-aosp_cf_x86_64_phone-userdebug}"
+  build_command: "m SystemUI"
+
 #-------------------------------------------------------------------------------
-# Update Skip Paths
+# Multi-Model Routing
 #-------------------------------------------------------------------------------
 
-# Files or directories to skip during `trellis update`.
-# Use this to prevent update from re-adding files you intentionally removed.
-#
-update:
-  skip:
-    - .claude/commands/trellis/before-frontend-dev.md
-    - .claude/commands/trellis/before-backend-dev.md
-    - .claude/commands/trellis/check-frontend.md
-    - .claude/commands/trellis/check-backend.md
-    - .cursor/commands/trellis-before-frontend-dev.md
-    - .cursor/commands/trellis-before-backend-dev.md
-    - .cursor/commands/trellis-check-frontend.md
-    - .cursor/commands/trellis-check-backend.md
-    - .agents/skills/before-frontend-dev/
-    - .agents/skills/before-backend-dev/
-    - .agents/skills/check-frontend/
-    - .agents/skills/check-backend/
+# Routes each pipeline phase to the optimal model.
+# Change "implementation" to "codex" when codeagent-wrapper is available.
+model_routing:
+  design_analysis: opus
+  planning: opus
+  implementation: opus
+  apply_diff: sonnet
+  verification: sonnet
+  debugging: opus
+  research: sonnet
+  documentation: haiku
+
+#-------------------------------------------------------------------------------
+# Codex Integration (optional — requires codeagent-wrapper)
+#-------------------------------------------------------------------------------
+
+codex:
+  wrapper: "~/.claude/bin/codeagent-wrapper"
+  role_prompt: ".claude/prompts/codex/android-implementer.md"
+  timeout: 3600000
+  session_reuse: true
 
 #-------------------------------------------------------------------------------
 # Task Lifecycle Hooks
 #-------------------------------------------------------------------------------
 
 hooks:
-  after_create:
-    - "python3 .trellis/scripts/hooks/linear_sync.py create"
-  after_start:
-    - "python3 .trellis/scripts/hooks/linear_sync.py start"
-  after_archive:
-    - "python3 .trellis/scripts/hooks/linear_sync.py archive"
+  after_create: []
+  after_start: []
+  after_archive: []
