@@ -65,6 +65,108 @@ def run_script(script_path: Path) -> str:
         return "No context available"
 
 
+def _get_android_context(project_dir: Path) -> str:
+    """
+    Build Android-specific context block for session start.
+
+    Includes:
+    - Device info (adb devices, graceful failure)
+    - Build target from config.yaml
+    - Model routing table
+    - memory/today.md progress (if exists)
+    """
+    lines: list[str] = []
+
+    # 1. Device info
+    try:
+        result = subprocess.run(
+            ["adb", "devices"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+        )
+        if result.returncode == 0:
+            device_output = result.stdout.strip()
+            lines.append("## Connected Devices")
+            lines.append("```")
+            lines.append(device_output)
+            lines.append("```")
+        else:
+            lines.append("## Connected Devices")
+            lines.append("_(adb not available or no devices connected)_")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        lines.append("## Connected Devices")
+        lines.append("_(adb not found — install Android SDK platform-tools)_")
+
+    lines.append("")
+
+    # 2. Build target + model routing from config.yaml
+    config_path = project_dir / ".trellis" / "config.yaml"
+    build_target = "aosp_cf_x86_64_phone-userdebug"  # default
+    model_routing: dict[str, str] = {}
+
+    if config_path.is_file():
+        try:
+            content = config_path.read_text(encoding="utf-8")
+            in_android = False
+            in_routing = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#") or not stripped:
+                    continue
+                if line.startswith("android:"):
+                    in_android = True
+                    in_routing = False
+                    continue
+                if line.startswith("model_routing:"):
+                    in_routing = True
+                    in_android = False
+                    continue
+                if line[0:1] not in (" ", "\t") and ":" in stripped:
+                    # Top-level key — reset section flags
+                    in_android = False
+                    in_routing = False
+                if in_android and line.startswith("  ") and "device_target" in stripped:
+                    _, _, val = stripped.partition(":")
+                    val = val.strip().strip('"').strip("'")
+                    if val:
+                        build_target = val
+                if in_routing and line.startswith("  ") and ":" in stripped:
+                    k, _, v = stripped.partition(":")
+                    model_routing[k.strip()] = v.strip()
+        except Exception:
+            pass
+
+    lines.append("## Build Target")
+    lines.append(f"`{build_target}`")
+    lines.append("")
+
+    # 3. Model routing table
+    if model_routing:
+        lines.append("## Model Routing")
+        lines.append("| Stage | Model |")
+        lines.append("|-------|-------|")
+        for stage, model in model_routing.items():
+            lines.append(f"| {stage} | {model} |")
+        lines.append("")
+
+    # 4. memory/today.md
+    today_md = project_dir / "memory" / "today.md"
+    if today_md.is_file():
+        try:
+            today_content = today_md.read_text(encoding="utf-8").strip()
+            if today_content:
+                lines.append("## Today's Progress (memory/today.md)")
+                lines.append(today_content)
+                lines.append("")
+        except Exception:
+            pass
+
+    return "\n".join(lines)
+
+
 def _get_task_status(trellis_dir: Path) -> str:
     """Check current task status and return structured status string."""
     current_task_file = trellis_dir / ".current-task"
@@ -172,6 +274,10 @@ Read and follow all instructions below carefully.
                         output.write("\n\n")
 
     output.write("</guidelines>\n\n")
+
+    output.write("<android-context>\n")
+    output.write(_get_android_context(project_dir))
+    output.write("\n</android-context>\n\n")
 
     output.write("<instructions>\n")
     start_md = read_file(

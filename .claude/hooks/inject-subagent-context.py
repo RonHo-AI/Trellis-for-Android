@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Multi-Agent Pipeline Context Injection Hook
+Multi-Agent Pipeline Context Injection Hook — Android Trellis Template
 
 Core Design Philosophy:
-- Dispatch becomes a pure dispatcher, only responsible for "calling subagents"
-- Hook is responsible for injecting all context, subagent works autonomously with complete info
+- Dispatch is a pure dispatcher, only responsible for calling subagents
+- Hook injects all context including model routing and Android specs
 - Each agent has a dedicated jsonl file defining its context
-- No resume needed, no segmentation, behavior controlled by code not prompt
 
-Trigger: PreToolUse (before Task tool call)
+Android Extensions:
+- Model routing: reads model_routing table from config.yaml, overrides 'model' in updatedInput
+- Android spec injection: injects relevant spec/design-analysis/, spec/implementation/,
+  spec/verification/ files per agent type
+- New agents: ui-designer (design token extraction), apply-diff (Codex diff application)
 
-Context Source: .trellis/.current-task points to task directory
-- implement.jsonl - Implement agent dedicated context
-- check.jsonl     - Check agent dedicated context
-- debug.jsonl     - Debug agent dedicated context
-- research.jsonl  - Research agent dedicated context (optional, usually not needed)
-- cr.jsonl        - Code review dedicated context
-- prd.md          - Requirements document
-- info.md         - Technical design
-- codex-review-output.txt - Code Review results
+Trigger: PreToolUse (before Task / Agent tool call)
 """
 
 # IMPORTANT: Suppress all warnings FIRST
@@ -52,7 +47,7 @@ FILE_CURRENT_TASK = ".current-task"
 FILE_TASK_JSON = "task.json"
 
 # Agents that don't update phase (can be called at any time)
-AGENTS_NO_PHASE_UPDATE = {"debug", "research"}
+AGENTS_NO_PHASE_UPDATE = {"debug", "research", "ui-designer", "apply-diff"}
 
 # =============================================================================
 # Subagent Constants (change here to rename subagent types)
@@ -62,11 +57,27 @@ AGENT_IMPLEMENT = "implement"
 AGENT_CHECK = "check"
 AGENT_DEBUG = "debug"
 AGENT_RESEARCH = "research"
+AGENT_UI_DESIGNER = "ui-designer"
+AGENT_APPLY_DIFF = "apply-diff"
 
 # Agents that require a task directory
-AGENTS_REQUIRE_TASK = (AGENT_IMPLEMENT, AGENT_CHECK, AGENT_DEBUG)
+AGENTS_REQUIRE_TASK = (AGENT_IMPLEMENT, AGENT_CHECK, AGENT_DEBUG, AGENT_APPLY_DIFF)
 # All supported agents
-AGENTS_ALL = (AGENT_IMPLEMENT, AGENT_CHECK, AGENT_DEBUG, AGENT_RESEARCH)
+AGENTS_ALL = (
+    AGENT_IMPLEMENT, AGENT_CHECK, AGENT_DEBUG, AGENT_RESEARCH,
+    AGENT_UI_DESIGNER, AGENT_APPLY_DIFF,
+)
+
+# Maps agent type to model_routing config key
+AGENT_TO_ROUTING_KEY: dict[str, str] = {
+    AGENT_UI_DESIGNER: "design_analysis",
+    "plan": "planning",
+    AGENT_IMPLEMENT: "implementation",
+    AGENT_APPLY_DIFF: "apply_diff",
+    AGENT_CHECK: "verification",
+    AGENT_DEBUG: "debugging",
+    AGENT_RESEARCH: "research",
+}
 
 
 def find_repo_root(start_path: str) -> str | None:
@@ -82,6 +93,58 @@ def find_repo_root(start_path: str) -> str | None:
             return str(current)
         current = current.parent
     return None
+
+
+def load_model_routing(repo_root: str) -> dict[str, str]:
+    """
+    Load model routing table from .trellis/config.yaml.
+
+    Returns:
+        Dict mapping routing key to model name, e.g. {"verification": "sonnet"}
+        Empty dict if config is unavailable.
+    """
+    config_path = os.path.join(repo_root, DIR_WORKFLOW, "config.yaml")
+    if not os.path.exists(config_path):
+        return {}
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Simple nested YAML parser for model_routing section
+        routing: dict[str, str] = {}
+        in_routing = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or not stripped:
+                continue
+            if line.startswith("model_routing:"):
+                in_routing = True
+                continue
+            if in_routing:
+                # Nested key detection: 2+ spaces indent
+                if line.startswith("  ") and ":" in stripped and not stripped.startswith("-"):
+                    key, _, val = stripped.partition(":")
+                    routing[key.strip()] = val.strip()
+                elif not line.startswith(" "):
+                    # Top-level key — end of model_routing section
+                    in_routing = False
+        return routing
+    except Exception:
+        return {}
+
+
+def get_model_for_agent(repo_root: str, subagent_type: str) -> str | None:
+    """
+    Look up the model to use for the given agent type.
+
+    Returns model name (e.g. "opus", "sonnet") or None if not configured.
+    """
+    routing_key = AGENT_TO_ROUTING_KEY.get(subagent_type)
+    if not routing_key:
+        return None
+    routing = load_model_routing(repo_root)
+    return routing.get(routing_key)
 
 
 def get_current_task(repo_root: str) -> str | None:
@@ -315,6 +378,18 @@ def get_implement_context(repo_root: str, task_dir: str) -> str:
             f"=== {task_dir}/info.md (Technical Design) ===\n{info_content}"
         )
 
+    # 4. Android: inject implementation spec files
+    android_impl_specs = [
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/implementation/index.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/implementation/overlay-patterns.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/implementation/coding-standards.md",
+        "specs/design/design-tokens.md",
+    ]
+    for spec_path in android_impl_specs:
+        content = read_file_content(repo_root, spec_path)
+        if content:
+            context_parts.append(f"=== {spec_path} (Android spec) ===\n{content}")
+
     return "\n\n".join(context_parts)
 
 
@@ -357,6 +432,17 @@ def get_check_context(repo_root: str, task_dir: str) -> str:
         context_parts.append(
             f"=== {task_dir}/prd.md (Requirements - for understanding intent) ===\n{prd_content}"
         )
+
+    # 3. Android: inject verification spec files
+    android_check_specs = [
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/verification/index.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/verification/4-tier-verification.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/verification/logcat-analysis.md",
+    ]
+    for spec_path in android_check_specs:
+        content = read_file_content(repo_root, spec_path)
+        if content:
+            context_parts.append(f"=== {spec_path} (Android spec) ===\n{content}")
 
     return "\n\n".join(context_parts)
 
@@ -444,6 +530,59 @@ def get_debug_context(repo_root: str, task_dir: str) -> str:
     if codex_output:
         context_parts.append(
             f"=== {task_dir}/codex-review-output.txt (Codex Review Results) ===\n{codex_output}"
+        )
+
+    return "\n\n".join(context_parts)
+
+
+def get_ui_designer_context(repo_root: str) -> str:
+    """
+    Context for UI Designer Agent (design token extraction).
+
+    Injects:
+    1. Design analysis spec files
+    2. Current design tokens (if exists)
+    """
+    context_parts = []
+
+    design_specs = [
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/design-analysis/index.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/design-analysis/token-extraction.md",
+        f"{DIR_WORKFLOW}/{DIR_SPEC}/design-analysis/android-resource-mapping.md",
+        "specs/design/design-tokens.md",
+    ]
+    for spec_path in design_specs:
+        content = read_file_content(repo_root, spec_path)
+        if content:
+            context_parts.append(f"=== {spec_path} ===\n{content}")
+
+    return "\n\n".join(context_parts)
+
+
+def get_apply_diff_context(repo_root: str, task_dir: str) -> str:
+    """
+    Context for Apply-Diff Agent (Codex output application).
+
+    Injects:
+    1. codex-output.diff from task directory (the diff to apply)
+    2. Implementation spec (for validation)
+    """
+    context_parts = []
+
+    # 1. Codex-generated diff
+    diff_content = read_file_content(repo_root, f"{task_dir}/codex-output.diff")
+    if diff_content:
+        context_parts.append(
+            f"=== {task_dir}/codex-output.diff (Codex-generated diff to apply) ===\n{diff_content}"
+        )
+
+    # 2. Implementation spec for validation
+    impl_index = read_file_content(
+        repo_root, f"{DIR_WORKFLOW}/{DIR_SPEC}/implementation/index.md"
+    )
+    if impl_index:
+        context_parts.append(
+            f"=== {DIR_WORKFLOW}/{DIR_SPEC}/implementation/index.md (Android impl spec) ===\n{impl_index}"
         )
 
     return "\n\n".join(context_parts)
@@ -707,6 +846,103 @@ Provide structured search results including:
 - External references (if any)"""
 
 
+def build_ui_designer_prompt(original_prompt: str, context: str) -> str:
+    """Build complete prompt for UI Designer (design token extraction)"""
+    return f"""# UI Designer Agent Task
+
+You are the UI Designer Agent in the Android Trellis Template pipeline.
+
+## Your Mission
+
+Extract design tokens from screenshots or design specs and output them
+as structured Android resource values in `specs/design/design-tokens.md`.
+
+## Design Specs and Context
+
+{context}
+
+---
+
+## Your Task
+
+{original_prompt}
+
+---
+
+## Workflow
+
+1. **Analyze input** - Examine the provided screenshots or design descriptions
+2. **Extract tokens** - Identify colors, dimensions, typography, spacing values
+3. **Map to Android** - Convert tokens to Android resource types (color, dimen, string)
+4. **Write output** - Update `specs/design/design-tokens.md` with extracted tokens
+
+## Token Output Format
+
+```markdown
+## Colors
+| Token Name | Value | Android Resource |
+|------------|-------|-----------------|
+| status_bar_bg | #1A1A2E | @color/status_bar_background |
+
+## Dimensions
+| Token Name | Value | Android Resource |
+|------------|-------|-----------------|
+| status_bar_height | 24dp | @dimen/status_bar_height |
+```
+
+## Important Constraints
+
+- Output ONLY Android-compatible resource values (no CSS units)
+- Use descriptive token names following snake_case convention
+- Every token must have a clear Android resource mapping
+- Preserve existing tokens when updating `design-tokens.md`"""
+
+
+def build_apply_diff_prompt(original_prompt: str, context: str) -> str:
+    """Build complete prompt for Apply-Diff (Codex output application)"""
+    return f"""# Apply-Diff Agent Task
+
+You are the Apply-Diff Agent in the Android Trellis Template pipeline.
+
+## Code Sovereignty Principle
+
+Codex generates diffs. YOU write the files. This preserves Claude Code's
+full control over the codebase and enables proper review of all changes.
+
+## Diff and Context
+
+{context}
+
+---
+
+## Your Task
+
+{original_prompt}
+
+---
+
+## Workflow
+
+1. **Read the diff** - Parse `codex-output.diff` carefully (unified diff format)
+2. **Validate scope** - Confirm changes are within Android AOSP source or overlay paths
+3. **Apply changes** - Use Edit/Write tools to apply each hunk precisely
+4. **Verify syntax** - Check modified files for obvious syntax errors
+5. **Report result** - List all modified files and any hunks that failed to apply
+
+## Application Rules
+
+- Apply hunks in order, top to bottom within each file
+- If a hunk fails (context mismatch), report it — do NOT guess or skip silently
+- Preserve exact indentation (4 spaces for AOSP Java/Kotlin)
+- Do NOT apply changes outside the expected file paths
+
+## Important Constraints
+
+- Do NOT execute git commit
+- Do NOT modify files not mentioned in the diff
+- Report all failed hunks clearly with file path and line range"""
+
+
 def main():
     try:
         input_data = json.load(sys.stdin)
@@ -773,18 +1009,32 @@ def main():
         # Research can work without task directory
         context = get_research_context(repo_root, task_dir)
         new_prompt = build_research_prompt(original_prompt, context)
+    elif subagent_type == AGENT_UI_DESIGNER:
+        # UI designer doesn't require a task directory
+        context = get_ui_designer_context(repo_root)
+        new_prompt = build_ui_designer_prompt(original_prompt, context)
+    elif subagent_type == AGENT_APPLY_DIFF:
+        assert task_dir is not None  # validated above
+        context = get_apply_diff_context(repo_root, task_dir)
+        new_prompt = build_apply_diff_prompt(original_prompt, context)
     else:
         sys.exit(0)
 
     if not context:
         sys.exit(0)
 
+    # Build updated input, optionally overriding model via model_routing
+    updated_input: dict = {**tool_input, "prompt": new_prompt}
+    routed_model = get_model_for_agent(repo_root, subagent_type)
+    if routed_model:
+        updated_input["model"] = routed_model
+
     # Return updated input with correct Claude Code PreToolUse format
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
-            "updatedInput": {**tool_input, "prompt": new_prompt},
+            "updatedInput": updated_input,
         }
     }
 

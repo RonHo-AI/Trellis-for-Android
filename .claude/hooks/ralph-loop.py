@@ -81,55 +81,63 @@ def get_verify_commands(repo_root: str) -> list[str]:
     """
     Read verify commands from worktree.yaml.
 
+    If worktree.yaml has no verify section, falls back to Android build
+    check scripts (scripts/build-check.sh, scripts/verify-no-regression.sh)
+    if they exist in the repo.
+
     Returns list of commands to run, or empty list if not configured.
     Uses simple YAML parsing without external dependencies.
     """
     yaml_path = os.path.join(repo_root, WORKTREE_YAML)
-    if not os.path.exists(yaml_path):
-        return []
+    commands: list[str] = []
 
-    try:
-        with open(yaml_path, "r", encoding="utf-8") as f:
-            content = f.read()
+    if os.path.exists(yaml_path):
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                content = f.read()
 
-        # Simple YAML parsing for verify section
-        # Look for "verify:" followed by list items
-        lines = content.split("\n")
-        in_verify_section = False
-        commands = []
+            # Simple YAML parsing for verify section
+            lines = content.split("\n")
+            in_verify_section = False
 
-        for line in lines:
-            stripped = line.strip()
+            for line in lines:
+                stripped = line.strip()
 
-            # Check for section start
-            if stripped.startswith("verify:"):
-                in_verify_section = True
-                continue
-
-            # Check for new section (not indented, ends with :)
-            if (
-                not line.startswith(" ")
-                and not line.startswith("\t")
-                and stripped.endswith(":")
-                and stripped != ""
-            ):
-                in_verify_section = False
-                continue
-
-            # If in verify section, look for list items
-            if in_verify_section:
-                # Skip comments and empty lines
-                if stripped.startswith("#") or stripped == "":
+                if stripped.startswith("verify:"):
+                    in_verify_section = True
                     continue
-                # Parse list item (- command)
-                if stripped.startswith("- "):
-                    cmd = stripped[2:].strip()
-                    if cmd:
-                        commands.append(cmd)
 
+                if (
+                    not line.startswith(" ")
+                    and not line.startswith("\t")
+                    and stripped.endswith(":")
+                    and stripped != ""
+                ):
+                    in_verify_section = False
+                    continue
+
+                if in_verify_section:
+                    if stripped.startswith("#") or stripped == "":
+                        continue
+                    if stripped.startswith("- "):
+                        cmd = stripped[2:].strip()
+                        if cmd:
+                            commands.append(cmd)
+        except Exception:
+            pass
+
+    if commands:
         return commands
-    except Exception:
-        return []
+
+    # Fallback: Android build check scripts (if they exist)
+    android_scripts = [
+        os.path.join(repo_root, "scripts", "build-check.sh"),
+        os.path.join(repo_root, "scripts", "verify-no-regression.sh"),
+    ]
+    fallback = [
+        f"bash {s}" for s in android_scripts if os.path.isfile(s)
+    ]
+    return fallback
 
 
 def run_verify_commands(repo_root: str, commands: list[str]) -> tuple[bool, str]:

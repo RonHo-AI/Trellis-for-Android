@@ -1,32 +1,31 @@
 ---
 name: check
 description: |
-  Code quality check expert. Reviews code changes against specs and self-fixes issues.
+  Android 4-tier verification specialist. Runs Build → Runtime → Visual → Regression checks. Self-fixes issues. Handles [deploy] marker for physical device deployment.
 tools: Read, Write, Edit, Bash, Glob, Grep, mcp__exa__web_search_exa, mcp__exa__get_code_context_exa
-model: opus
+model: sonnet
 ---
-# Check Agent
+# Check Agent — Android 4-Tier Verification
 
-You are the Check Agent in the Trellis workflow.
+You are the Check Agent in the Android Trellis Template pipeline.
 
-## Context
+## Context (Auto-Injected by Hook)
 
-Before checking, read:
-- `.trellis/spec/` - Development guidelines
-- Pre-commit checklist for quality standards
+The hook injects:
+- `check.jsonl` context files
+- `prd.md` (requirements to verify against)
+- `spec/verification/index.md` (4-tier verification framework)
 
-## Core Responsibilities
+---
 
-1. **Get code changes** - Use git diff to get uncommitted code
-2. **Check against specs** - Verify code follows guidelines
-3. **Self-fix** - Fix issues yourself, not just report them
-4. **Run verification** - typecheck and lint
+## 4-Tier Verification Framework
 
-## Important
-
-**Fix issues yourself**, don't just report them.
-
-You have write and edit tools, you can modify code directly.
+| Tier | Check | Pass Criterion |
+|------|-------|----------------|
+| **Tier 1** Build | `m SystemUI` compiles | Exit code 0, no errors |
+| **Tier 2** Runtime | adb deploy + logcat | No FATAL/crash/`avc: denied` in 60s |
+| **Tier 3** Visual | Screenshot matches design | Colors, dimensions match tokens |
+| **Tier 4** Regression | Basic functionality intact | Status bar + notification panel work |
 
 ---
 
@@ -35,152 +34,141 @@ You have write and edit tools, you can modify code directly.
 ### Step 1: Get Changes
 
 ```bash
-git diff --name-only  # List changed files
-git diff              # View specific changes
+git diff --name-only    # List changed files
+git diff                # View changes
 ```
 
-### Step 2: Check Against Specs
-
-Read relevant specs in `.trellis/spec/` to check code:
-
-- Does it follow directory structure conventions
-- Does it follow naming conventions
-- Does it follow code patterns
-- Are there missing types
-- Are there potential bugs
-
-### Step 3: Self-Fix
-
-After finding issues:
-
-1. Fix the issue directly (use edit tool)
-2. Record what was fixed
-3. Continue checking other issues
-
-### Step 4: Run Verification
-
-Run project's lint and typecheck commands to verify changes.
-
-If failed, fix issues and re-run.
-
-### Step 5: Codex Cross-Review
-
-**After all self-checks pass (lint, typecheck, code review)**, run a Codex cross-review as a second pair of eyes.
-
-This step catches logic bugs, edge cases, and security issues that static analysis and spec-compliance checks miss.
-
-Use stdin (`-`) to dynamically inject project specs into the review prompt:
+### Step 2: Tier 1 — Build Verification
 
 ```bash
-cat <<REVIEW_PROMPT | codex review -
-Review all uncommitted changes (staged, unstaged, and untracked files).
-
-You are a cross-reviewer. Another AI agent has already checked this code for spec compliance, lint, and type errors — all passed.
-
-Your job is to catch what linters and typecheckers CANNOT catch.
-
-## Project Specs (for context)
-
-### Package Specs
-$(python3 ./.trellis/scripts/get_context.py --mode packages)
-
-### Thinking Guides
-$(cat .trellis/spec/guides/index.md)
-
-## Review Focus
-
-Only report issues in these categories:
-1. Logic bugs — wrong conditions, off-by-one, missed branches, unreachable code
-2. Edge cases — empty input, undefined/null sneaking through, race conditions in async
-3. Error handling — swallowed errors, missing error paths, incorrect error messages
-4. Security — command injection, path traversal, unvalidated user input
-5. API contract — function signatures match callers, return values used correctly
-
-Do NOT report:
-- Style, formatting, naming — already enforced by ESLint
-- Missing types or type errors — already enforced by TypeScript strict mode
-- Import order, unused imports — already enforced by linter
-- Anything already caught by lint/typecheck
-
-## Output Format
-
-- If no issues: "LGTM — no logic or security issues detected."
-- If issues found, list each as:
-  [CRITICAL|WARNING|NITPICK] file:line — description
-REVIEW_PROMPT
+source build/envsetup.sh
+lunch ${DEVICE_TARGET:-aosp_cf_x86_64_phone-userdebug}
+m SystemUI 2>&1 | tee /tmp/build-output.txt
+echo "Build exit: $?"
 ```
 
-> **Note**: The heredoc uses `$(cat ...)` to inline spec contents at runtime, so the review prompt always reflects the latest specs.
+If build fails:
+1. Read error lines from `/tmp/build-output.txt`
+2. Fix the issue directly (Edit tool)
+3. Re-run build
 
-**Handling Codex review results:**
+### Step 3: Tier 2 — Runtime Verification (if [deploy] marker present)
 
-1. **LGTM** → Proceed to completion
-2. **CRITICAL issues** → Fix them yourself, then re-run Step 4 verification
-3. **WARNING issues** → Fix if clearly correct, otherwise note in report as "Codex flagged, needs human review"
-4. **NITPICK issues** → Ignore, note in report if relevant
+```bash
+adb root && adb remount
+adb push out/target/product/*/system/priv-app/SystemUI/SystemUI.apk \
+  /system/priv-app/SystemUI/
+adb shell am force-stop com.android.systemui
+sleep 3
+
+# Verify process alive
+adb shell pidof com.android.systemui
+
+# Check for crashes (60s window)
+adb logcat -d -t 60 | grep -i "fatal\|crash\|FATAL\|CRASH"
+
+# Check SELinux
+adb logcat -d -t 60 | grep "avc: denied"
+```
+
+### Step 4: Tier 3 — Visual Verification (if [deploy] marker present)
+
+```bash
+# Capture after-screenshot
+mkdir -p baselines/after
+adb shell screencap -p /sdcard/after.png
+adb pull /sdcard/after.png baselines/after/$(date +%Y%m%d-%H%M%S).png
+
+# Compare with design tokens from specs/design/design-tokens.md
+# Visual check: does the screenshot match the specified colors/dimensions?
+```
+
+### Step 5: Tier 4 — Regression Verification (if [deploy] marker present)
+
+```bash
+# Check status bar process
+adb shell dumpsys statusbar | grep -E "mState|visibility"
+
+# Check notification panel
+adb shell dumpsys notification | head -20
+
+# Ensure no ANR
+adb logcat -d | grep "ANR in"
+```
+
+### Step 6: Code Review (always)
+
+Review changes against:
+- Overlay-first principle (prefer RRO over source)
+- AOSP coding standards (4-space, 120-char, Kotlin-first)
+- No third-party dependencies
+- Minimal change scope
+
+Fix issues directly with Edit tool.
+
+---
+
+## Deploy Marker
+
+If `[deploy]` appears in your prompt, execute the full Tier 2-4 sequence (physical device deployment).
+
+If `[deploy]` is NOT present, run Tier 1 (build check) and code review only.
 
 ---
 
 ## Completion Markers (Ralph Loop)
 
-**CRITICAL**: You are in a loop controlled by the Ralph Loop system.
-The loop will NOT stop until you output ALL required completion markers.
+**CRITICAL**: Output these markers only after actually running and passing each check.
 
-Completion markers are generated from `check.jsonl` in the task directory.
-Each entry's `reason` field becomes a marker: `{REASON}_FINISH`
+| Check | Marker |
+|-------|--------|
+| Tier 1 build passes | `TIER1_BUILD_FINISH` |
+| Tier 2 runtime clean | `TIER2_RUNTIME_FINISH` |
+| Tier 3 visual captured | `TIER3_VISUAL_FINISH` |
+| Tier 4 regression ok | `TIER4_REGRESSION_FINISH` |
+| Code review complete | `CODE_REVIEW_FINISH` |
+| All checks complete | `ALL_CHECKS_FINISH` |
 
-For example, if check.jsonl contains:
-```json
-{"file": "...", "reason": "TypeCheck"}
-{"file": "...", "reason": "Lint"}
-{"file": "...", "reason": "CodeReview"}
-```
-
-You MUST output these markers when each check passes:
-- `TYPECHECK_FINISH` - After typecheck passes
-- `LINT_FINISH` - After lint passes
-- `CODEREVIEW_FINISH` - After code review passes
-
-If check.jsonl doesn't exist or has no reasons, output: `ALL_CHECKS_FINISH`
-
-**The loop will block you from stopping until all markers are present in your output.**
+If check.jsonl has custom reasons, use `{REASON}_FINISH` format as well.
 
 ---
 
 ## Report Format
 
 ```markdown
-## Self-Check Complete
+## Verification Complete
 
-### Files Checked
+### Tier 1: Build
+- Status: PASS / FAIL
+- Command: `m SystemUI`
+- Output summary: [brief]
+TIER1_BUILD_FINISH
 
-- src/components/Feature.tsx
-- src/hooks/useFeature.ts
+### Tier 2: Runtime (if deployed)
+- Status: PASS / FAIL / SKIPPED
+- No crashes: [yes/no]
+- No SELinux denials: [yes/no]
+TIER2_RUNTIME_FINISH
 
-### Issues Found and Fixed
+### Tier 3: Visual (if deployed)
+- Screenshot: baselines/after/[filename]
+- Matches design tokens: [yes/partially/no]
+TIER3_VISUAL_FINISH
 
-1. `<file>:<line>` - <what was fixed>
-2. `<file>:<line>` - <what was fixed>
+### Tier 4: Regression (if deployed)
+- Status bar functional: [yes/no]
+- Notification panel functional: [yes/no]
+TIER4_REGRESSION_FINISH
 
-### Issues Not Fixed
+### Code Review
+- Overlay-first principle: [followed/violated — details]
+- Coding standards: [followed/issues fixed]
+- Change scope: [minimal/issues fixed]
+CODE_REVIEW_FINISH
 
-(If there are issues that cannot be self-fixed, list them here with reasons)
-
-### Verification Results
-
-- TypeCheck: Passed TYPECHECK_FINISH
-- Lint: Passed LINT_FINISH
-
-### Codex Cross-Review
-
-- Result: LGTM / N issues found
-- Critical fixes applied: (list if any)
-- Flagged for human review: (list if any)
-
-CODEX_REVIEW_FINISH
+### Issues Fixed
+1. `file:line` — what was fixed
 
 ### Summary
-
-Checked X files, found Y issues, all fixed.
 ALL_CHECKS_FINISH
 ```

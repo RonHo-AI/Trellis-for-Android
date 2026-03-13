@@ -1,153 +1,109 @@
-# Finish Work - Pre-Commit Checklist
+# Finish Work - Android AOSP Pre-Commit Checklist
 
-Before submitting or committing, use this checklist to ensure work completeness.
+Before committing Android AOSP changes, use this checklist.
 
-**Timing**: After code is written and tested, before commit
+**Timing**: After code is written and device-tested, before commit
 
 ---
 
 ## Checklist
 
-### 1. Code Quality
+### 1. Tier 1: Build Verification
 
 ```bash
-# Must pass
-pnpm lint
-pnpm type-check
-pnpm test
+source build/envsetup.sh
+lunch ${DEVICE_TARGET:-aosp_cf_x86_64_phone-userdebug}
+m SystemUI
 ```
 
-- [ ] `pnpm lint` passes with 0 errors?
-- [ ] `pnpm type-check` passes with no type errors?
-- [ ] Tests pass?
-- [ ] No `console.log` statements (use logger)?
-- [ ] No non-null assertions (the `x!` operator)?
-- [ ] No `any` types?
+- [ ] `m SystemUI` exits with code 0?
+- [ ] No compilation errors?
+- [ ] No `undefined symbol` or `error:` lines?
 
-### 1.5. Test Coverage
+### 2. Overlay-First Principle
 
-Check if your change needs new or updated tests (see `.trellis/spec/cli/unit-test/conventions.md`):
+- [ ] Could this change have been done with an RRO? If yes, is it using RRO?
+- [ ] If source modification was used, is the reason documented in prd.md?
+- [ ] No third-party dependencies introduced?
 
-- [ ] New pure function → unit test added?
-- [ ] Bug fix → regression test added in `test/regression.test.ts`?
-- [ ] Changed init/update behavior → integration test added/updated?
-- [ ] No logic change (text/data only) → no test needed
+### 3. Code Standards
 
-### 2. Code-Spec Sync
+- [ ] Indentation: 4 spaces (not tabs) for Java/Kotlin/XML?
+- [ ] Line length: ≤ 120 characters?
+- [ ] Kotlin preferred over Java for new files?
+- [ ] Change scope is minimal (only modified what's necessary)?
 
-**Code-Spec Docs**:
-- [ ] Does `.trellis/spec/cli/backend/` need updates?
-  - New patterns, new modules, new conventions
-- [ ] Does `.trellis/spec/cli/frontend/` need updates?
-  - New components, new hooks, new patterns
-- [ ] Does `.trellis/spec/guides/` need updates?
-  - New cross-layer flows, lessons from bugs
+### 4. Build System
 
-**Key Question**: 
-> "If I fixed a bug or discovered something non-obvious, should I document it so future me (or others) won't hit the same issue?"
+- [ ] Android.bp updated if new overlay module created?
+- [ ] Overlay manifest has correct `android:targetPackage`?
+- [ ] Resource names exactly match AOSP source (case-sensitive)?
 
-If YES -> Update the relevant code-spec doc.
+### 5. Tier 2: Runtime Check (if device connected)
 
-### 2.5. Code-Spec Hard Block (Infra/Cross-Layer)
+```bash
+adb root && adb remount
+adb push out/target/product/*/system/priv-app/SystemUI/SystemUI.apk \
+  /system/priv-app/SystemUI/
+adb shell am force-stop com.android.systemui
+sleep 3
+adb shell pidof com.android.systemui
+adb logcat -d -t 60 | grep -i "fatal\|crash"
+adb logcat -d -t 60 | grep "avc: denied"
+```
 
-If this change touches infra or cross-layer contracts, this is a blocking checklist:
+- [ ] SystemUI process alive after restart?
+- [ ] No FATAL/crash in first 60s?
+- [ ] No `avc: denied` SELinux errors?
 
-- [ ] Spec content is executable (real signatures/contracts), not principle-only text
-- [ ] Includes file path + command/API name + payload field names
-- [ ] Includes validation and error matrix
-- [ ] Includes Good/Base/Bad cases
-- [ ] Includes required tests and assertion points
+### 6. Visual Check (if device connected)
 
-**Block Rule**:
-In pipeline mode, the finish agent will automatically detect and execute spec updates when gaps are found.
-If running this checklist manually, ensure spec sync is complete before committing — run `/trellis:update-spec` if needed.
+```bash
+bash scripts/capture-screenshot.sh after
+```
 
-### 3. API Changes
+- [ ] Screenshot captured to `baselines/after/`?
+- [ ] Visual change matches design tokens in `specs/design/design-tokens.md`?
+- [ ] No unintended visual regressions?
 
-If you modified API endpoints:
+### 7. Spec Sync
 
-- [ ] Input schema updated?
-- [ ] Output schema updated?
-- [ ] API documentation updated?
-- [ ] Client code updated to match?
-
-### 4. Database Changes
-
-If you modified database schema:
-
-- [ ] Migration file created?
-- [ ] Schema file updated?
-- [ ] Related queries updated?
-- [ ] Seed data updated (if applicable)?
-
-### 5. Cross-Layer Verification
-
-If the change spans multiple layers:
-
-- [ ] Data flows correctly through all layers?
-- [ ] Error handling works at each boundary?
-- [ ] Types are consistent across layers?
-- [ ] Loading states handled?
-
-### 6. Manual Testing
-
-- [ ] Feature works in browser/app?
-- [ ] Edge cases tested?
-- [ ] Error states tested?
-- [ ] Works after page refresh?
+- [ ] Does `.trellis/spec/implementation/` need updates for new patterns discovered?
+- [ ] Does `specs/design/design-tokens.md` have all the tokens used?
 
 ---
 
 ## Quick Check Flow
 
 ```bash
-# 1. Code checks
-pnpm lint && pnpm type-check
+# 1. Build
+m SystemUI && echo "BUILD OK"
 
 # 2. View changes
 git status
 git diff --name-only
 
-# 3. Based on changed files, check relevant items above
+# 3. Deploy and check (if device connected)
+bash scripts/build-and-deploy.sh
 ```
 
 ---
 
 ## Common Oversights
 
-| Oversight | Consequence | Check |
-|-----------|-------------|-------|
-| Code-spec docs not updated | Others don't know the change | Check .trellis/spec/ |
-| Spec text is abstract only | Easy regressions in infra/cross-layer changes | Require signature/contract/matrix/cases/tests |
-| Migration not created | Schema out of sync | Check db/migrations/ |
-| Types not synced | Runtime errors | Check shared types |
-| Tests not updated | False confidence | Run full test suite |
-| Console.log left in | Noisy production logs | Search for console.log |
+| Oversight | Consequence | Fix |
+|-----------|-------------|-----|
+| Wrong resource name | Build error or no effect | Cross-check with AOSP source |
+| Missing Android.bp | Overlay not included in build | Add to product packages |
+| SELinux denial | Feature broken silently | Run `adb logcat \| grep avc` |
+| No baselines/after/ screenshot | No visual proof | Run capture-screenshot.sh |
+| Overlay targets wrong package | No visual effect | Check `android:targetPackage` in manifest |
 
 ---
 
-## Relationship to Other Commands
+## Development Flow
 
 ```
-Development Flow:
-  Write code -> Test -> /trellis:finish-work -> git commit -> /trellis:record-session
-                          |                              |
-                   Ensure completeness              Record progress
-                   
-Debug Flow:
-  Hit bug -> Fix -> /trellis:break-loop -> Knowledge capture
-                       |
-                  Deep analysis
+Implement → Build (m SystemUI) → Deploy (adb) → Verify (logcat + screenshot)
+  → /trellis:finish-work → git commit → /trellis:record-session
 ```
-
-- `/trellis:finish-work` - Check work completeness (this command)
-- `/trellis:record-session` - Record session and commits
-- `/trellis:break-loop` - Deep analysis after debugging
-
----
-
-## Core Principle
-
-> **Delivery includes not just code, but also documentation, verification, and knowledge capture.**
-
-Complete work = Code + Docs + Tests + Verification

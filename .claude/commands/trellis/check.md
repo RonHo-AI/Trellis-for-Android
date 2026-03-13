@@ -1,4 +1,4 @@
-Check if the code you just wrote follows the development guidelines.
+Check if the Android AOSP changes you made follow development guidelines and pass 4-tier verification.
 
 Execute these steps:
 
@@ -7,19 +7,29 @@ Execute these steps:
    git diff --name-only HEAD
    ```
 
-2. **Determine which spec modules apply** based on the changed file paths:
+2. **Tier 1: Build verification** (always required):
    ```bash
-   python3 ./.trellis/scripts/get_context.py --mode packages
+   source build/envsetup.sh
+   lunch ${DEVICE_TARGET:-aosp_cf_x86_64_phone-userdebug}
+   m SystemUI 2>&1 | tail -20
+   echo "Exit: $?"
    ```
 
-3. **Read the spec index** for each relevant module:
+3. **Code review against Android standards**:
+   - Overlay-first: did you use RRO where possible?
+   - AOSP style: 4-space indent, 120-char lines, Kotlin preferred
+   - No third-party dependencies
+   - Android.bp updated if new overlay module added
+
+4. **Read the verification spec**:
    ```bash
-   cat .trellis/spec/<package>/<layer>/index.md
+   cat .trellis/spec/verification/index.md
    ```
-   Follow the **"Quality Check"** section in the index.
 
-4. **Read the specific guideline files** referenced in the Quality Check section (e.g., `quality-guidelines.md`, `conventions.md`). The index is NOT the goal — it points you to the actual guideline files. Read those files and review your code against them.
+5. **Tier 2-4 (if device connected)**:
+   ```bash
+   adb devices
+   # If device connected, run /trellis:deploy then check logcat
+   ```
 
-5. **Run lint and typecheck** for the affected package.
-
-6. **Report any violations** and fix them if found.
+6. **Report any violations** and fix them.
